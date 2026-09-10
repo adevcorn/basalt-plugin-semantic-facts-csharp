@@ -18,7 +18,10 @@ use basalt_plugin_sdk::facts::{SemanticFact, SymbolKind, serialize_facts};
 basalt_plugin_meta! {
     name:              "semantic-facts-csharp",
     version:           env!("CARGO_PKG_VERSION"),
-    hook_flags:        CAP_CAPABILITY_HANDLE | CAP_API_INDEX,
+    // NOTE: core defines SEMANTIC_FACTS = 1 << 16 but the SDK has no const
+    // for it yet; the literal keeps the declared flags truthful. The live
+    // dispatch path keys off CAP_CAPABILITY_HANDLE + provides/globs.
+    hook_flags:        CAP_CAPABILITY_HANDLE | CAP_API_INDEX | (1 << 16),
     provides:          "semantic-facts@csharp/v1",
     requires:          "parse.call-sites@cs/v1\nparse.retrieval@cs/v1",
     optional_requires: "",
