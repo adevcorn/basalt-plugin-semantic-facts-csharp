@@ -20,7 +20,7 @@ basalt_plugin_meta! {
     version:           env!("CARGO_PKG_VERSION"),
     hook_flags:        CAP_CAPABILITY_HANDLE | CAP_API_INDEX,
     provides:          "semantic-facts@csharp/v1",
-    requires:          "parse.call-sites@csharp/v1\nparse.retrieval@csharp/v1",
+    requires:          "parse.call-sites@cs/v1\nparse.retrieval@cs/v1",
     optional_requires: "",
     file_globs:        "**/*.cs",
     activates_on:      "",
@@ -76,7 +76,7 @@ fn invoke_parse_call_sites(src: &[u8]) -> Result<Vec<u8>, i64> {
     request.extend_from_slice(&(src.len() as u32).to_le_bytes());
     request.extend_from_slice(src);
     request.extend_from_slice(&16384u32.to_le_bytes());
-    invoke_capability("parse.call-sites@csharp/v1", &request).map_err(|_| -1003)
+    invoke_capability("parse.call-sites@cs/v1", &request).map_err(|_| -1003)
 }
 
 fn invoke_parse_retrieval(src: &[u8]) -> Result<Vec<u8>, i64> {
@@ -84,7 +84,7 @@ fn invoke_parse_retrieval(src: &[u8]) -> Result<Vec<u8>, i64> {
     request.extend_from_slice(&(src.len() as u32).to_le_bytes());
     request.extend_from_slice(src);
     request.extend_from_slice(&8192u32.to_le_bytes());
-    invoke_capability("parse.retrieval@csharp/v1", &request).map_err(|_| -1003)
+    invoke_capability("parse.retrieval@cs/v1", &request).map_err(|_| -1003)
 }
 
 // ── Parser response decoding ───────────────────────────────────────────────
