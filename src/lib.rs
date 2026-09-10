@@ -11,13 +11,14 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use basalt_plugin_sdk::prelude::*;
+use basalt_plugin_sdk::facts::{SemanticFact, SymbolKind, serialize_facts};
 
 // ── Plugin metadata ────────────────────────────────────────────────────────
 
 basalt_plugin_meta! {
     name:              "semantic-facts-csharp",
     version:           env!("CARGO_PKG_VERSION"),
-    hook_flags:        CAP_CAPABILITY_HANDLE | CAP_SEMANTIC_FACTS,
+    hook_flags:        CAP_CAPABILITY_HANDLE | CAP_API_INDEX,
     provides:          "semantic-facts@csharp/v1",
     requires:          "parse.call-sites@csharp/v1\nparse.retrieval@csharp/v1",
     optional_requires: "",

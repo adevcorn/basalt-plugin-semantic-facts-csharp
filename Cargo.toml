@@ -7,7 +7,8 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-basalt-plugin-sdk = { path = "../basalt-plugin-sdk" }
+# serde feature required: without it serialize_facts is a stub returning empty.
+basalt-plugin-sdk = { path = "../basalt-plugin-sdk", features = ["serde"] }
 
 [profile.release]
 opt-level = "s"
