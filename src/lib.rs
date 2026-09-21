@@ -72,6 +72,7 @@ fn derive_semantic_facts(src: &[u8]) -> Result<Vec<u8>, i64> {
     derive_declarations(&retrieval, &mut facts);
     derive_call_edges(&call_sites, &retrieval, &mut facts);
     derive_usings(src, &mut facts);
+    derive_awaits(src, &mut facts);
     // C# specific relationships could be added here (Inheritance etc)
 
     Ok(serialize_facts(&facts))
@@ -281,12 +282,98 @@ fn derive_call_edges(
         facts.push(SemanticFact::Calls {
             caller_offset: offset,
             caller_length: callee.len() as u32,
-            callee: resolved,
+            callee: resolved.clone(),
         });
+        if let Some(io_kind) = classify_io(&resolved) {
+            facts.push(SemanticFact::IOOperation {
+                io_kind,
+                offset,
+                length: callee.len() as u32,
+                descriptor: Some(resolved),
+            });
+        }
     }
 }
 
-/// Extract `using` directives from source text into `ImportModule` facts.
+/// C#-specific I/O classification over callee names. Lives here (not core):
+/// the signals are ecosystem knowledge (`HttpClient` vs `reqwest`).
+fn classify_io(callee: &str) -> Option<basalt_plugin_sdk::facts::IOKind> {
+    // Compare against the bare tail: `System.Net.Http.HttpClient::GetAsync`
+    // and `client.GetAsync` must both hit.
+    let tail = callee.rsplit("::").next().unwrap_or(callee);
+    let tail = tail.rsplit('.').next().unwrap_or(tail);
+    let lower = tail.to_ascii_lowercase();
+    let full_lower = callee.to_ascii_lowercase();
+
+    if full_lower.contains("httpclient")
+        || full_lower.contains("httprequest")
+        || full_lower.contains("webrequest")
+        || full_lower.contains("tcpclient")
+        || full_lower.contains("udpsocket")
+        || full_lower.contains("socket")
+        || full_lower.contains("restsharp")
+        || ["getasync", "postasync", "putasync", "deleteasync", "sendasync"]
+            .contains(&lower.as_str())
+    {
+        Some(basalt_plugin_sdk::facts::IOKind::Network)
+    } else if full_lower.contains("streamreader")
+        || full_lower.contains("readalltext")
+        || full_lower.contains("readalllines")
+        || full_lower.contains("file.read")
+        || lower == "read"
+        || lower == "openread"
+    {
+        Some(basalt_plugin_sdk::facts::IOKind::FileRead)
+    } else if full_lower.contains("streamwriter")
+        || full_lower.contains("writealltext")
+        || full_lower.contains("writealllines")
+        || full_lower.contains("file.write")
+        || full_lower.contains("file.append")
+    {
+        Some(basalt_plugin_sdk::facts::IOKind::FileWrite)
+    } else if full_lower.contains("console.")
+        || full_lower.contains("debug.write")
+        || full_lower.contains("trace.write")
+        || lower == "writeline"
+        || lower == "write"
+    {
+        // `Write` alone is ambiguous — only treat it as StdIO when it
+        // wasn't already claimed by FileWrite above.
+        Some(basalt_plugin_sdk::facts::IOKind::StdIO)
+    } else {
+        None
+    }
+}
+
+/// Extract `await` expressions into `AsyncBoundary` facts via text scan.
+/// No AST needed: `await` is a contextual keyword, matched with word
+/// boundaries outside of line comments.
+fn derive_awaits(src: &[u8], facts: &mut Vec<SemanticFact>) {
+    let text = alloc::string::String::from_utf8_lossy(src);
+    for line in text.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        let mut search = code;
+        let mut col = 0usize;
+        while let Some(pos) = search.find("await") {
+            let abs = col + pos;
+            let before_ok = abs == 0
+                || !code.as_bytes()[abs - 1].is_ascii_alphanumeric() && code.as_bytes()[abs - 1] != b'_';
+            let after = abs + 5;
+            let after_ok = code.len() <= after
+                || (!code.as_bytes()[after].is_ascii_alphanumeric() && code.as_bytes()[after] != b'_');
+            if before_ok && after_ok {
+                let line_off = line.as_ptr() as usize - text.as_ptr() as usize;
+                facts.push(SemanticFact::AsyncBoundary {
+                    boundary_kind: basalt_plugin_sdk::facts::AsyncBoundaryKind::Await,
+                    offset: (line_off + abs) as u32,
+                    length: 5,
+                });
+            }
+            search = &code[after..];
+            col = after;
+        }
+    }
+}
 /// Handles `using Foo.Bar;`, `using static Foo.Bar;` (skipped — no type
 /// scope), and `using Alias = Foo.Bar;` (alias preserved for core's
 /// import-alias resolution).
@@ -384,8 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn usings_emit_import_facts_with_alias() {
-        let src = b"using System.Text;\nusing IO = System.IO;\nusing static System.Math;\nnamespace App {}\n";
+    fn usings_emit_import_facts_with_alias() {        let src = b"using System.Text;\nusing IO = System.IO;\nusing static System.Math;\nnamespace App {}\n";
         let mut facts = Vec::new();
         derive_usings(src, &mut facts);
         assert!(facts.iter().any(|f| matches!(f,
@@ -395,5 +481,46 @@ mod tests {
                 if module_path == "System.IO" && a == "IO")));
         assert!(!facts.iter().any(|f| matches!(f,
             SemanticFact::ImportModule { module_path, .. } if module_path.contains("Math"))));
+    }
+}
+
+#[cfg(test)]
+mod io_tests {
+    use super::*;
+    use alloc::{vec, vec::Vec};
+    use basalt_plugin_sdk::facts::IOKind;
+
+    #[test]
+    fn io_classification_hits_csharp_signals() {
+        let ret: Vec<(u32, u32, &str, u8)> = vec![];
+        let sites = vec![
+            (0u32, "HttpClient.GetAsync"),
+            (10u32, "File.ReadAllText"),
+            (20u32, "StreamWriter.Write"),
+            (30u32, "Console.WriteLine"),
+            (40u32, "Save"),
+        ];
+        let mut facts = Vec::new();
+        derive_call_edges(&sites, &ret, &mut facts);
+        let kinds: Vec<IOKind> = facts
+            .iter()
+            .filter_map(|f| match f {
+                SemanticFact::IOOperation { io_kind, .. } => Some(*io_kind),
+                _ => None,
+            })
+            .collect();
+        assert!(kinds.contains(&IOKind::Network), "HttpClient must be Network");
+        assert!(kinds.contains(&IOKind::FileRead), "ReadAllText must be FileRead");
+        assert!(kinds.contains(&IOKind::FileWrite), "StreamWriter must be FileWrite");
+        assert!(kinds.contains(&IOKind::StdIO), "Console must be StdIO");
+        assert_eq!(kinds.len(), 4, "Save must not classify");
+    }
+
+    #[test]
+    fn awaits_detected_with_word_boundaries() {
+        let src = b"var x = await FetchAsync();\n// await in comment\nvar awaiting = 1;\n";
+        let mut facts = Vec::new();
+        derive_awaits(src, &mut facts);
+        assert_eq!(facts.len(), 1, "only the real await, not comment/awaiting");
     }
 }
